@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" d2i_parser.py)",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" probe_blockers.py)",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" probe_stats3.py)",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" probe_new_stats.py)",
+      "WebSearch",
+      "Bash(curl -sL -o d2r_itemstatcost.json \"https://raw.githubusercontent.com/blizzhackers/d2data/master/json/base/itemstatcost.json\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(curl -sL -o _ref_d2slib_items.cs \"https://raw.githubusercontent.com/dschu012/D2SLib/master/src/Model/Save/Items.cs\")",
+      "Bash(curl -sL \"https://api.github.com/repos/dschu012/D2SLib/git/trees/master?recursive=1\")",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sys,json; t=json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in t['tree'] if x['path'].endswith\\('.cs'\\) and \\('IO' in x['path'] or 'Bit' in x['path']\\)]\")",
+      "Bash(curl -sL -o _ref_bitreader.cs \"https://raw.githubusercontent.com/dschu012/D2SLib/master/src/IO/BitReader.cs\")",
+      "Bash(curl -sL -o _ref_bitarray.cs \"https://raw.githubusercontent.com/dschu012/D2SLib/master/src/IO/InternalBitArray.cs\")",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" _diag_section.py)",
+      "Bash(curl -sL \"https://api.github.com/repos/locbones/D2SLib-D2R/git/trees/master?recursive=1\")",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sys,json; t=json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in t.get\\('tree',[]\\) if x['path'].endswith\\('.cs'\\) and 'Item' in x['path']]\")",
+      "Bash(curl -sL -o _ref_d2r_items.cs \"https://raw.githubusercontent.com/locbones/D2SLib-D2R/master/src/Model/Save/Items.cs\")",
+      "Bash('c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe' -c ' *)",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" _diag_perfail.py)",
+      "Bash(\"c:\\\\Users\\\\dmlop\\\\.copilot\\\\skills\\\\.venv\\\\Scripts\\\\python.exe\" _diag_chain.py)",
+      "Read(//c/Program Files \\(x86\\)/Diablo II Resurrected/**)",
+      "Read(//c/Program Files \\(x86\\)/Diablo II Resurrected/Data/**)",
+      "Bash(pip list *)",
+      "Bash(where.exe CascView)",
+      "Bash(where.exe casc *)",
+      "WebFetch(domain:github.com)",
+      "Bash(cd /tmp)",
+      "Bash(rm -rf pyd2s_probe)",
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "Bash(python -)",
+      "Bash(python -c \"import pyd2s; print\\('pyd2s', pyd2s.__file__\\)\")",
+      "Bash(pip show *)",
+      "Bash(python Scripts/d2i_parser.py)",
+      "Bash(grep -oE \"[0-9]+ \\\\|$\")"
+    ]
+  }
+}

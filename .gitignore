@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local editor / agent settings (personal, not shared)
+.claude/settings.local.json
+
+# Generated report — contains personal save data.
+# Remove this line (or `git add -f items.md`) if you want to commit a sample.
+items.md
+
+# D2R save files (personal data — never commit)
+*.d2s
+*.d2i
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
