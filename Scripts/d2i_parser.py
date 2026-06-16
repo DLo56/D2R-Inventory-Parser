@@ -445,8 +445,8 @@ _QUALITY_STR = {
     5: "Set", 6: "Rare", 7: "Unique", 8: "Crafted", 9: "Tempered",
 }
 _LOCATION_STR = {
-    0: "None", 1: "Head", 2: "Amulet", 3: "Body", 4: "Right Hand", 5: "Left Hand",
-    6: "Ring Left", 7: "Ring Right", 8: "Belt", 9: "Feet", 10: "Gloves",
+    0: "None", 1: "Head", 2: "Amulet", 3: "Body", 4: "Weapon - Right Hand", 5: "Shield - Left Hand",
+    6: "Ring - Left", 7: "Ring - Right", 8: "Belt", 9: "Feet", 10: "Gloves",
     11: "Right Hand (alt)", 12: "Left Hand (alt)",
 }
 _MODE_STR = {0: "Stored", 1: "Equipped", 2: "Belt", 4: "Cursor", 6: "Socketed"}
@@ -806,22 +806,18 @@ class D2Item:
             # a 1-bit is-stacked flag followed by 8 bits of quantity (9 bits total);
             # the caller's align() then advances to the next byte boundary.
             #
-            # Non-stackable compact items occupy exactly 80 bits (10 bytes) on disk.
-            # The Huffman code length varies per item code, so the padding is NOT a
-            # fixed 8 bits.  E.g. 'mp2 ' = 18 Huffman bits → header(53)+code(18)+
-            # socketed(1) = 72 bits, already byte-aligned → align() is a no-op but
-            # the item is still 9 bytes, 1 byte short of the 10-byte boundary.
-            # 'mp3 ' = 19 bits → 73 bits → padding = 7 to reach 80.
-            # Correct formula: padding = 80 − bits_consumed_so_far.
+            # Non-stackable compact items carry NO further fields: after the
+            # 1-bit socketed count the item simply ends and the caller's align()
+            # advances to the next byte boundary.  Do NOT pad to a fixed 80 bits
+            # (10 bytes) — the Huffman code length varies per code, so a compact
+            # item is whatever its fields occupy rounded up to the next byte.
+            # E.g. 'wms ' = 16 Huffman bits → header(53)+code(16)+socketed(1) = 70
+            # bits → align() → 72 bits (9 bytes).  Forcing 80 over-reads one byte
+            # and desyncs every item that follows (the equipped head item, etc.).
             code = self.code.strip()
             if code in _STACKABLE_CODES:
                 s.read_bits(1)           # flag bit (always 1 for stacked items)
                 self.quantity = s.read_bits(8)
-            else:
-                bits_used = s.bit_pos - self.start_bit
-                padding = 80 - bits_used
-                if padding > 0:
-                    s.read_bits(padding)
             return
 
         self._parse_complete()

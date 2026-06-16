@@ -5,12 +5,14 @@ shared stash (`*.d2i`) and character (`*.d2s`) files and produces a single,
 human-readable Markdown report — `items.md` — listing every item, its mods,
 sockets, runewords, quantities, and level requirements, grouped the way the
 game's panels are (Equipped / Inventory / Belt / Cube / Personal Stash).
+The main purpose is to provide a full list of items accross save files to
+AI agents for analysis and decision-making.
 
 > This targets **vanilla / official D2R**. Vanilla D2R keeps adding official
 > content over patches (new classes, skills, runewords). If something shows up
-> as `Skill(id=N)`, `Class(N)`, or an unnamed item, that is **not** a mod — it
-> means the bundled game-data tables are older than your install. Refresh them
-> with the CASC extractor (see below). This project is not a modding tool.
+> as `Skill(id=N)`, `Class(N)`, or an unnamed item, it> means the bundled 
+> game-data tables are older than your install. Refresh them with the CASC
+> extractor (see below). This project is not a modding tool.
 
 ## Requirements
 

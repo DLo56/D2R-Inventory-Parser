@@ -38,11 +38,14 @@ Run the parser: `python Scripts/d2i_parser.py` (flags: `--belts`, `--cubes`,
 
 4. **Stdlib only.** No third-party dependencies in either script.
 
-5. **Keep game data current, never bundle stale tables as the source of
-   truth.** The live tables under `Scripts/gamedata_d2r/excel/` (loaded as
+5. **Keep game data current**, never bundle stale tables as the source of truth.
+  The live tables under `Scripts/gamedata_d2r/excel/` (loaded as
    `_GAMEDATA`) and `Scripts/_strings/` are authoritative. The legacy
    `Scripts/d2r_*.txt` / `d2r_*.json` / `_pyd2s_runtime/` (classic-D2 MPQ data)
    are **unused/stale** — do not reintroduce them as data sources.
+
+6. When modifying user-facing features, ensure that the README.md is updated
+   to reflect the changes.
 
 ## Save-file format cheat-sheet
 
