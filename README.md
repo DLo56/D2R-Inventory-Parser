@@ -5,6 +5,19 @@ shared stash (`*.d2i`) and character (`*.d2s`) files and produces a single,
 human-readable Markdown report — `items.md` — listing every item, its mods,
 sockets, runewords, quantities, and level requirements, grouped the way the
 game's panels are (Equipped / Inventory / Belt / Cube / Personal Stash).
+The report opens with a **Gems** matrix (gem type across columns, quality down
+the rows, quantity in each cell) and a **Runes** count table, tallied from the
+shared stash's *dedicated* gem/rune pages (a stash tab is treated as a stone page
+when gems/runes make up most of its loose contents; socketed stones and stray
+gems in gear tabs are excluded).
+
+For each character it also reports **Attributes** (Strength, Dexterity,
+Vitality, Energy, unspent points), the **Skills** with allocated hard points,
+and a **Gear Bonuses** table of aggregate "page 2" stats (Magic Find, Faster
+Cast Rate, resistances, life/mana steal, etc.). The Attributes and Skills tables
+include `Base`, `From Items`, and `Total` columns — `From Items` sums the bonuses
+the game counts toward the character sheet (the primary equipped set plus charms
+carried in the inventory; the alternate weapon-swap set is excluded).
 The main purpose is to provide a full list of items accross save files to
 AI agents for analysis and decision-making.
 
@@ -99,8 +112,29 @@ diablo/
 
 ## Notes / known gaps
 
-- Socketed rune/gem "when socketed in X" modifiers are computed by the game,
-  not stored in the save, so they aren't shown.
+- Socketed rune/gem "when socketed in X" modifiers are computed by the game, not
+  stored in the save, so they aren't listed in an item's mod string. They **are**
+  folded into the character `From Items` / `Total` columns (for the four core
+  attributes) via gems.txt.
 - Magic/rare affix-based level requirements are approximate and can read high.
+- Attribute/skill `Base` values come from the save; `From Items` is computed
+  from the items the game counts (active equipped set + inventory charms,
+  excluding the weapon-swap set). It gates **set partial bonuses** by how many
+  pieces of that set are equipped (a lone set piece's "green" bonuses don't
+  count) and adds rune/gem socket mods. Charges and granted "oskills" are not
+  counted toward skill levels. Full-set (complete-set) bonuses and set bonuses
+  with item-specific (non-count) activation are not separately modeled.
+- The Attributes table shows the four primary attributes (Str/Dex/Vit/Energy)
+  plus unspent points. Max Life/Mana/Stamina and Level are intentionally omitted.
+- The **Gear Bonuses** table is summed from gear only (active set + inventory
+  charms, gated set bonuses, with socket mods). **Passive skills and auras**
+  (e.g. Barbarian Natural Resistance / Increased Speed, Paladin resist auras)
+  also feed these stats in-game but are NOT included. Resistances are shown as
+  gear totals — the game subtracts the difficulty penalty (Nightmare −40, Hell
+  −100) and caps at the max resist (75% default); neither is applied here.
+  Defense / Attack Rating / weapon Damage need full character formulas and are
+  not computed.
+- Warlock (`war`) `+to skill tab` bonuses are not yet attributed (its screen-tab
+  layout isn't mapped); +all/+class/+single-skill bonuses still apply normally.
 
 See `AGENTS.md` for deeper format details and contributor guidance.

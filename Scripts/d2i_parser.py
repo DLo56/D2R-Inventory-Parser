@@ -102,6 +102,11 @@ _STAT_PARAM_BITS: List[int] = []
 _STAT_VALUE_BITS: List[int] = []
 _STAT_SAVE_ADD:   List[int] = []
 _MAX_STAT_ID:     int       = 0
+# Character-save stat widths come from a DIFFERENT itemstatcost column than item
+# stats: the attributes ("gf") section packs each stat as 9-bit id + CSvBits-wide
+# value (CSvSigned marks two's-complement values).  Do not reuse "Save Bits".
+_STAT_CSV_BITS:   List[int] = []
+_STAT_CSV_SIGNED: List[int] = []
 # Stats with no descfunc in itemstatcost are not displayed by the game itself
 # (e.g. item_extrablood on Gorefoot) — suppress them from the attribute string.
 _HIDDEN_STATS:    set       = set()
@@ -133,7 +138,46 @@ _PREFIX_NAMES:    dict = {}   # magic affix id -> prefix word (e.g. 'Bronze')
 _SUFFIX_NAMES:    dict = {}   # magic affix id -> suffix word (e.g. 'of Flame')
 _ITEM_MAXSTACK:   dict = {}   # code -> max stack size (stackable items)
 _RUNEWORD_NAMES:  dict = {}   # tuple(rune codes in order) -> runeword display name
+_GEM_CLASS:       dict = {}   # gem code -> (type, quality), e.g. 'gpy' -> ('Topaz','Perfect')
+_SET_ITEM_GROUP:  dict = {}   # set item *ID -> set group name (to count equipped pieces)
+_ARMOR_TYPE:      dict = {}   # armor code -> armor.txt 'type' (for socket classification)
+# Socketed rune/gem bonuses are computed by the game, not stored in the save.
+# gem code -> {'weapon'|'helm'|'shield': [(stat_id, value), ...]}, resolved via
+# properties.txt so resistances/MF/etc. (not just core attributes) are included.
+_RUNE_SOCKET_MODS: dict = {}
+_PROP_STATS:      dict = {}   # properties.txt code -> [stat_id, ...]
+_STAT_ID_BY_NAME: dict = {}   # itemstatcost Stat name -> stat id
+_SHIELD_TYPES     = {"shie", "ashd", "head", "grim"}    # use gems.txt shieldMod
+_HELM_ARMOR_TYPES = {"helm", "pelt", "phlm", "circ", "tors"}  # use helmMod
 _SKILL_NAMES:     dict = {}   # skill *Id -> (display name, charclass code)
+# charclass token (skills.txt) per character-class id; the per-class skill rows
+# appear in skills.txt in the same 0..29 order the character save's 30 skill
+# bytes use, so row order == save index.
+_CLASS_SKILL_TOKEN = {
+    0: "ama", 1: "sor", 2: "nec", 3: "pal",
+    4: "bar", 5: "dru", 6: "ass", 7: "war",
+}
+# charclass token -> [(skill display name, skill id, SkillPage), ...] in save
+# order. SkillPage is the skilldesc tab page (1-based) — NOT the item-bonus tab
+# index; the two orderings differ per class (Paladin Combat=page1=tab0, but
+# Necromancer Curses=page1=tab2), so item "+to skill tab" attribution must go
+# through _CLASS_PAGE_TO_TAB rather than assuming page-1 == tab.
+_CLASS_SKILLS:    dict = {}
+_SKILLDESC_PAGE:  dict = {}   # skilldesc name -> SkillPage (1-based)
+# One representative skill per item-bonus tab (stat 188 param: tab = param&7,
+# class = (param>>3)&7), listed in tab order 0,1,2 to match the _skilltab handler.
+# Used to resolve each class's SkillPage->item-tab permutation from real data.
+_TAB_ANCHORS = {
+    "ama": ("Magic Arrow", "Inner Sight", "Jab"),
+    "sor": ("Fire Bolt", "Charged Bolt", "Ice Bolt"),
+    "nec": ("Raise Skeleton", "Teeth", "Amplify Damage"),
+    "pal": ("Sacrifice", "Might", "Prayer"),
+    "bar": ("Bash", "Blade Mastery", "Howl"),
+    "dru": ("Raven", "Wearwolf", "Firestorm"),
+    "ass": ("Fire Trauma", "Psychic Hammer", "Tiger Strike"),
+    # Warlock (war): screen-tab layout not yet mapped; +tab bonuses fall through.
+}
+_CLASS_PAGE_TO_TAB: dict = {}   # token -> {SkillPage: item_tab}
 
 
 def _as_int(v) -> int:
@@ -218,10 +262,16 @@ def _load_stat_table() -> None:
                 _STAT_PARAM_BITS.append(0)
                 _STAT_VALUE_BITS.append(0)
                 _STAT_SAVE_ADD.append(0)
+                _STAT_CSV_BITS.append(0)
+                _STAT_CSV_SIGNED.append(0)
             _STAT_NAMES[sid]      = (row.get("Stat") or "").strip()
+            if _STAT_NAMES[sid]:
+                _STAT_ID_BY_NAME[_STAT_NAMES[sid]] = sid
             _STAT_PARAM_BITS[sid] = _as_int(row.get("Save Param Bits"))
             _STAT_VALUE_BITS[sid] = _as_int(row.get("Save Bits"))
             _STAT_SAVE_ADD[sid]   = _as_int(row.get("Save Add"))
+            _STAT_CSV_BITS[sid]   = _as_int(row.get("CSvBits"))
+            _STAT_CSV_SIGNED[sid] = _as_int(row.get("CSvSigned"))
             # No descfunc => the game cannot render this stat, so neither do we.
             if not (row.get("descfunc") or "").strip():
                 _HIDDEN_STATS.add(sid)
@@ -248,6 +298,7 @@ def _load_item_kinds() -> None:
     for code, row in codes_from("armor.txt"):
         _ARMOR_CODES.add(code)
         set_item_name(code, (row.get("name") or "").strip())
+        _ARMOR_TYPE[code] = (row.get("type") or "").strip()
         req = _as_int(row.get("levelreq") or "")
         if req:
             _ITEM_LEVELREQ[code] = req
@@ -296,6 +347,10 @@ def _load_item_kinds() -> None:
                         lr = _as_int(row.get("lvl req") or "")
                         if lr:
                             lvldest[int(uid_raw)] = lr
+                        if fname == "setitems.txt":
+                            grp = (row.get("set") or "").strip()
+                            if grp:
+                                _SET_ITEM_GROUP[int(uid_raw)] = grp
         except FileNotFoundError:
             pass
 
@@ -366,9 +421,101 @@ def _load_item_kinds() -> None:
         pass
 
 
+# Gem matrix layout (display order).
+_GEM_TYPE_ORDER    = ["Amethyst", "Topaz", "Sapphire", "Emerald", "Ruby", "Diamond", "Skull"]
+_GEM_QUALITY_ORDER = ["Chipped", "Flawed", "Standard", "Flawless", "Perfect"]
+_GEM_QUALITY_WORDS = {"Chipped", "Flawed", "Flawless", "Perfect"}
+
+
+def _load_gem_classification() -> None:
+    """Classify gem codes into (type, quality) from gems.txt names, e.g.
+    'gpy' -> ('Topaz', 'Perfect'). Runes (names ending in 'Rune') are skipped —
+    they're tallied separately by _RUNE_NAME."""
+    path = _GAMEDATA / "gems.txt"
+    try:
+        with open(path, encoding="cp1252") as fh:
+            for row in csv.DictReader(fh, delimiter="\t"):
+                code = (row.get("code") or "").strip()
+                name = (row.get("name") or "").strip()
+                if not code or not name or name.endswith("Rune"):
+                    continue
+                head, _, rest = name.partition(" ")
+                if head in _GEM_QUALITY_WORDS and rest:
+                    quality, gtype = head, rest
+                else:
+                    quality, gtype = "Standard", name   # un-prefixed mid gem
+                _GEM_CLASS[code] = (gtype, quality)
+    except FileNotFoundError:
+        pass
+
+
+def _load_properties() -> None:
+    """Map properties.txt code -> [stat id, ...] (e.g. 'res-all' -> all four
+    resists).  Used to resolve gem/rune socket mods into concrete stats."""
+    path = _GAMEDATA / "properties.txt"
+    try:
+        with open(path, encoding="cp1252") as fh:
+            for row in csv.DictReader(fh, delimiter="\t"):
+                code = (row.get("code") or "").strip()
+                if not code:
+                    continue
+                sids = [_STAT_ID_BY_NAME[sn] for i in range(1, 8)
+                        for sn in ((row.get(f"stat{i}") or "").strip(),)
+                        if sn and sn in _STAT_ID_BY_NAME]
+                if sids:
+                    _PROP_STATS[code] = sids
+    except FileNotFoundError:
+        pass
+
+
+def _load_gem_socket_mods() -> None:
+    """Load gems.txt per-slot socket bonuses (weapon / helm-armor / shield) — the
+    mods the game applies at runtime but never stores in the save (the documented
+    'when socketed in X' gap).  Resolved to concrete stats via properties.txt."""
+    path = _GAMEDATA / "gems.txt"
+    slots = (("weapon", "weaponMod"), ("helm", "helmMod"), ("shield", "shieldMod"))
+    try:
+        with open(path, encoding="cp1252") as fh:
+            for row in csv.DictReader(fh, delimiter="\t"):
+                code = (row.get("code") or "").strip()
+                if not code:
+                    continue
+                mods = {}
+                for slot, prefix in slots:
+                    out = []
+                    for n in (1, 2, 3):
+                        prop = (row.get(f"{prefix}{n}Code") or "").strip()
+                        val = _as_int(row.get(f"{prefix}{n}Min") or "")
+                        if val:
+                            for sid in _PROP_STATS.get(prop, ()):
+                                out.append((sid, val))
+                    if out:
+                        mods[slot] = out
+                if mods:
+                    _RUNE_SOCKET_MODS[code] = mods
+    except FileNotFoundError:
+        pass
+
+
+def _load_skilldesc() -> None:
+    """Load skilldesc.txt: skilldesc name -> SkillPage (the 1-based skill tab)."""
+    path = _GAMEDATA / "skilldesc.txt"
+    try:
+        with open(path, encoding="cp1252") as fh:
+            for row in csv.DictReader(fh, delimiter="\t"):
+                name = (row.get("skilldesc") or "").strip()
+                page = _as_int(row.get("SkillPage"))
+                if name and page:
+                    _SKILLDESC_PAGE[name] = page
+    except FileNotFoundError:
+        pass
+
+
 def _load_skills() -> None:
     """Load skills.txt (TSV): skill *Id -> (display name, charclass code).
-    Used to resolve skill-id params (item_singleskill, auras, CTC procs, etc.)."""
+    Used to resolve skill-id params (item_singleskill, auras, CTC procs, etc.)
+    and to build the per-class skill tree (_CLASS_SKILLS) for character saves."""
+    _load_skilldesc()
     path = _GAMEDATA / "skills.txt"
     try:
         with open(path, encoding="cp1252") as fh:
@@ -379,14 +526,40 @@ def _load_skills() -> None:
                 name = (row.get("skill") or "").strip()
                 cls  = (row.get("charclass") or "").strip()
                 if name:
-                    _SKILL_NAMES[int(sid_raw)] = (name, cls)
+                    sid = int(sid_raw)
+                    _SKILL_NAMES[sid] = (name, cls)
+                    if cls:
+                        # Row order within a class == the 0..29 index used by the
+                        # character save's skill bytes (the in-game skill tree).
+                        page = _SKILLDESC_PAGE.get((row.get("skilldesc") or "").strip(), 0)
+                        _CLASS_SKILLS.setdefault(cls, []).append((name, sid, page))
     except FileNotFoundError:
         pass
+    _build_page_to_tab()
+
+
+def _build_page_to_tab() -> None:
+    """Resolve each class's {SkillPage -> item-bonus tab index} from anchor skills,
+    since the two orderings are permuted differently per class."""
+    for token, anchors in _TAB_ANCHORS.items():
+        page_of = {name: page for name, _sid, page in _CLASS_SKILLS.get(token, [])}
+        mapping = {}
+        for item_tab, anchor_name in enumerate(anchors):
+            page = page_of.get(anchor_name)
+            if page:
+                mapping[page] = item_tab
+        # Only trust a complete bijection (all three tabs resolved); otherwise
+        # leave it empty so tab bonuses degrade to "not counted" rather than wrong.
+        if len(mapping) == 3:
+            _CLASS_PAGE_TO_TAB[token] = mapping
 
 
 _load_string_tables()
 _load_stat_table()
+_load_properties()
 _load_item_kinds()
+_load_gem_socket_mods()
+_load_gem_classification()
 _load_skills()
 
 # maxdurability is stat id 73; both the max and current durability fields in
@@ -450,6 +623,47 @@ _LOCATION_STR = {
     11: "Right Hand (alt)", 12: "Left Hand (alt)",
 }
 _MODE_STR = {0: "Stored", 1: "Equipped", 2: "Belt", 4: "Cursor", 6: "Socketed"}
+
+# Attributes ("gf" section) display. We show only the four primary attributes
+# plus unspent points. Hidden: current life/mana/stamina (6/8/10), experience
+# (13), gold (14/15), and the derived rows max life/mana/stamina (7/9/11) and
+# level (12) — those add little next to the four core stats and the base values
+# don't reflect gear.
+_ATTR_HIDDEN   = {6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+_ATTR_LABEL    = {
+    0: "Strength", 1: "Energy", 2: "Dexterity", 3: "Vitality",
+    4: "Unspent Stat Points", 5: "Unspent Skill Points",
+}
+
+# Gear Bonuses section: aggregate "character page 2" stats summed from gear.
+# (itemstatcost stat name, display label, value suffix), shown in this order.
+_GEAR_BONUS_ROWS = [
+    ("item_fastercastrate",     "Faster Cast Rate",          "%"),
+    ("item_fastergethitrate",   "Faster Hit Recovery",       "%"),
+    ("item_fasterattackrate",   "Increased Attack Speed",    "%"),
+    ("item_fasterblockrate",    "Faster Block Rate",         "%"),
+    ("item_fastermovevelocity", "Faster Run/Walk",           "%"),
+    ("item_magicbonus",         "Magic Find",                "%"),
+    ("item_goldbonus",          "Extra Gold from Monsters",  "%"),
+    ("lifedrainmindam",         "Life Stolen per Hit",       "%"),
+    ("manadrainmindam",         "Mana Stolen per Hit",       "%"),
+    ("item_manaafterkill",      "Mana After Each Kill",      ""),
+    ("item_healafterkill",      "Life After Each Kill",      ""),
+    ("item_crushingblow",       "Crushing Blow",             "%"),
+    ("item_deadlystrike",       "Deadly Strike",             "%"),
+    ("item_openwounds",         "Open Wounds",               "%"),
+    ("normal_damage_reduction", "Damage Reduced",            ""),
+    ("magic_damage_reduction",  "Magic Damage Reduced",      ""),
+    ("item_damagetomana",       "Damage Taken Goes to Mana", "%"),
+    ("item_attackertakesdamage","Attacker Takes Damage",     ""),
+    ("item_poisonlengthresist", "Poison Length Reduced",     "%"),
+]
+_RESIST_ROWS = [
+    ("fireresist",   "Fire Resist"),
+    ("coldresist",   "Cold Resist"),
+    ("lightresist",  "Lightning Resist"),
+    ("poisonresist", "Poison Resist"),
+]
 
 # Rune short names keyed by item code (r01-r33)
 _RUNE_NAME = {
@@ -754,6 +968,8 @@ class D2Item:
         self.prefix_ids: list = []  # magicprefix rows (magic/rare) for level-req calc
         self.suffix_ids: list = []  # magicsuffix rows (magic/rare) for level-req calc
         self.stats: list = []      # [(sid, name, param, value), ...]
+        self.set_bonus_lists: list = []  # for set items: [[stat indices], ...] per
+                                         # partial bonus list, in activation order
         self.section_idx = 0
         self.partial = False
         self.partial_bit_pos = 0
@@ -901,7 +1117,14 @@ class D2Item:
             self._read_stat_list()
             for bit in (1, 2, 4, 8, 16, 32, 64):
                 if extra_lists & bit:
+                    before = len(self.stats)
                     self._read_stat_list()
+                    if q == 5:
+                        # Set items: each extra list is a PARTIAL set bonus, active
+                        # only once enough set pieces are equipped. Record the index
+                        # range (the stats stay in self.stats for display) so the
+                        # character-sheet math can gate inactive ones by piece count.
+                        self.set_bonus_lists.append(list(range(before, len(self.stats))))
         except UnknownStatError as _e:
             self.partial = True
             self.partial_bit_pos = _e.bit_pos
@@ -1185,6 +1408,75 @@ def _write_consumable_table(lines: list, items: list) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Collection summary: gem matrix + rune tally (across all parsed files)
+# ---------------------------------------------------------------------------
+
+
+def _write_collection_summary(lines: list, stashes: list) -> None:
+    """Tally gems and runes held in the shared stash's *dedicated* gem/rune pages
+    and render a gem matrix (type columns x quality rows) plus a rune count table.
+
+    Scope: only shared-stash sections whose loose contents are mostly gems/runes
+    (so a stray gem in a gear tab, a socketed stone, or stones in character
+    inventories are not counted).  This matches an organized stash where gems and
+    runes live on their own tabs."""
+    from collections import defaultdict
+
+    gems: dict = {}   # (type, quality) -> count
+    runes: dict = {}  # rune code -> count
+    for stash in stashes:
+        # Bucket each stash page's loose items into gem / rune / other.
+        pages: dict = defaultdict(lambda: {"gem": [], "rune": [], "other": 0})
+        for it in stash.items:
+            if it.mode == 6:                       # socketed, not a loose stone
+                continue
+            code = it.code.strip()
+            bucket = pages[it.section_idx]
+            qty = max(1, it.quantity)          # gems/runes stack in the shared stash
+            if code in _GEM_CLASS:
+                bucket["gem"].append((_GEM_CLASS[code], qty))
+            elif code in _RUNE_NAME:
+                bucket["rune"].append((code, qty))
+            else:
+                bucket["other"] += 1
+        # Count only pages where gem/rune stacks outnumber everything else (dedicated).
+        for b in pages.values():
+            if len(b["gem"]) + len(b["rune"]) <= b["other"]:
+                continue
+            for key, qty in b["gem"]:
+                gems[key] = gems.get(key, 0) + qty
+            for code, qty in b["rune"]:
+                runes[code] = runes.get(code, 0) + qty
+
+    if gems:
+        types = [t for t in _GEM_TYPE_ORDER if any(k[0] == t for k in gems)]
+        lines.append("## Gems")
+        # lines.append(f"*{sum(gems.values())} gems in the shared stash page*")
+        lines.append("")
+        lines.append("| Quality | " + " | ".join(types) + " |")
+        lines.append("|" + "---|" * (len(types) + 1))
+        col_tot = {t: 0 for t in types}
+        for q in _GEM_QUALITY_ORDER:
+            cells = []
+            for t in types:
+                c = gems.get((t, q), 0)
+                cells.append(str(c) if c else "·")
+                col_tot[t] += c
+            lines.append(f"| {q} | " + " | ".join(cells) + "|")
+        lines.append("")
+
+    if runes:
+        lines.append("## Runes")
+        # lines.append(f"*{sum(runes.values())} runes in the shared stash page*")
+        lines.append("")
+        lines.append("| Rune | Count |")
+        lines.append("|---|---|")
+        for code in sorted(runes, key=lambda c: int(c[1:])):
+            lines.append(f"| {_RUNE_NAME.get(code, code)} | {runes[code]} |")
+        lines.append("")
+
+
+# ---------------------------------------------------------------------------
 # Stash file parser
 # ---------------------------------------------------------------------------
 
@@ -1330,7 +1622,7 @@ class D2IFile:
 
     def display(self) -> None:
         print("=" * 70)
-        print(f"D2R SHARED STASH: {self.path.name}")
+        print(f"D2R SHARED STASH")
         print("=" * 70)
         if not self.items:
             print("  (No items)")
@@ -1342,12 +1634,15 @@ class D2IFile:
 
     def _write_stash_sections(self, lines: list) -> None:
         """Append all stash section tables for this file into lines."""
+        # Socketed items (mode 6) are children shown inside their parent's
+        # "(rune+rune)" runeword note; don't also list them as standalone rows.
+        top_level = [it for it in self.items if it.mode != 6]
         sections: dict = defaultdict(list)
-        for item in self.items:
+        for item in top_level:
             sections[item.section_idx].append(item)
 
-        lines.append(f"## Stash: {self.path.name}")
-        lines.append(f"*{len(self.items)} items total*")
+        # lines.append(f"## Shared Stash")
+        # lines.append(f"*{len(top_level)} items total*")
         lines.append("")
 
         for sec_idx in sorted(sections):
@@ -1361,13 +1656,13 @@ class D2IFile:
             is_consumable = consumable_count == len(sec_items)
 
             if is_consumable:
-                sec_label = "Gems, Runes & Consumables"
+                sec_label = "Gems and Runes"
             else:
-                sec_label = f"Page {sec_idx + 1}"
+                sec_label = f"Shared Stash - Page {sec_idx + 1}"
 
             partial_note = f", {partial_count} partially parsed" if partial_count else ""
             lines.append(f"### {sec_label}")
-            lines.append(f"*{len(sec_items)} items{partial_note}*")
+            # lines.append(f"*{len(sec_items)} items{partial_note}*")
             lines.append("")
 
             if is_consumable:
@@ -1385,10 +1680,14 @@ class D2IFile:
         lines = [
             "# D2R Save Report",
             "",
-            f"**Source:** `{self.path.name}`  ",
-            f"**Total items parsed:** {len(self.items)}",
-            "",
-            "[toc]",
+
+            "- **CRITICAL CONTEXT RETENTION:** This file is a multi-character database. When a user asks a question about a specific character (e.g., `Darknight` or `Vincent`), you MUST lock onto that character's exact header and ONLY look at data between that header and the next major character header.",
+            "- **DO NOT CROSS-POLLUTE BACKGROUNDS:** Many characters share identical subheadings (such as `Attributes`, `Gear Bonuses`, `Inventory`, `Stash`, and `Mercenary`). You are strictly forbidden from pulling rows from a 'Mercenary' or 'Inventory' table unless you have verified it belongs under the requested character's parent block.",
+            "- **ISOLATED SECTIONS:** For example, the string `Mercenary - Darknight` is a child element of the character Darknight. The string `Mercenary - Vincent` belongs strictly to Vincent. Never blend or mistake the two.",
+            "- **COMPREHENSIVE SEGMENT READING:** When checking a section, read it sequentially from top-to-bottom to ensure columns, slots, and stats match up cleanly without skipping lines.",
+            "---",
+            # f"**Source:** `{self.path.name}`  ",
+            # f"**Total items parsed:** {len(self.items)}",
             "",
         ]
         self._write_stash_sections(lines)
@@ -1431,16 +1730,165 @@ class D2CharFile:
         self.char_name  = ""
         self.char_class = 0
         self.char_level = 0
+        self.attributes: List[tuple] = []    # [(stat_id, name, value), ...]
+        self.skills:     List[tuple] = []    # [(name, hard_points, skill_id, tab0), ...]
         self.items:      List[D2Item] = []   # character's own items
         self.merc_items: List[D2Item] = []   # mercenary items
+        # Item bonuses (active gear + inventory charms), filled by _compute_item_bonuses
+        self.attr_items: dict = {0: 0, 1: 0, 2: 0, 3: 0}  # str/energy/dex/vit
+        self.sk_all = 0          # +all skills
+        self.sk_class = 0        # +this class's skills
+        self.sk_tab: dict = {}   # tab0 -> +skills on that tab (this class)
+        self.sk_single: dict = {}  # skill id -> +that single skill
+        self.item_stat_totals: dict = {}  # stat id -> summed value (non-param stats)
         self._parse_header()
+        self._parse_stats()
+        self._parse_skills()
         self._parse_all_items()
+        self._compute_item_bonuses()
 
     # ------------------------------------------------------------------
     def _parse_header(self) -> None:
         self.char_class = self.data[24]
         self.char_level = self.data[27]
         self.char_name  = self.data[299:315].split(b"\x00")[0].decode("ascii", errors="replace")
+
+    # ------------------------------------------------------------------
+    def _parse_stats(self) -> None:
+        """Decode the attributes ("gf") section: a packed list of
+        [9-bit stat id][CSvBits-wide value] pairs, terminated by id 0x1FF.
+        Widths/signedness come from itemstatcost's CSvBits/CSvSigned columns.
+        Only base attributes are stored here; derived stats (resists, breakpoints)
+        are recomputed by the game at runtime and are NOT in the save."""
+        marker = self.data.find(b"gf")
+        if marker < 0:
+            return
+        s = BitStream(self.data, (marker + 2) * 8)
+        guard = 0
+        while guard < 64:                    # 16 stats max; guard against desync
+            guard += 1
+            sid = s.read_bits(9)
+            if sid == 0x1FF:                 # end-of-list sentinel
+                break
+            if not (0 <= sid < len(_STAT_CSV_BITS)) or _STAT_CSV_BITS[sid] == 0:
+                # Unknown/zero-width id => stream desynced; keep it visible (rule 2).
+                self.attributes.append((sid, f"Stat({sid})", "?"))
+                break
+            value = s.read_bits(_STAT_CSV_BITS[sid])
+            if _STAT_CSV_SIGNED[sid] and value >= (1 << (_STAT_CSV_BITS[sid] - 1)):
+                value -= 1 << _STAT_CSV_BITS[sid]
+            self.attributes.append((sid, _STAT_NAMES[sid] or f"Stat({sid})", value))
+
+    # ------------------------------------------------------------------
+    def _parse_skills(self) -> None:
+        """Decode the skills ("if") section: 30 bytes of hard (base) points, one
+        per class skill, mapped to names by skills.txt tree order.  +skills from
+        gear are applied at runtime and are not stored here."""
+        marker = self.data.find(b"if")
+        if marker < 0:
+            return
+        token = _CLASS_SKILL_TOKEN.get(self.char_class, "")
+        tree = _CLASS_SKILLS.get(token, [])
+        page_to_tab = _CLASS_PAGE_TO_TAB.get(token, {})
+        raw = self.data[marker + 2 : marker + 2 + 30]
+        for i, points in enumerate(raw):
+            if points <= 0:
+                continue
+            if i < len(tree):
+                name, sid, page = tree[i]
+                tab = page_to_tab.get(page, -1)   # -1 => no tab bonus attributed
+            else:
+                name, sid, tab = f"Skill(idx={i})", -1, -1
+            self.skills.append((name, points, sid, tab))
+
+    # ------------------------------------------------------------------
+    _CHARM_CODES = {"cm1", "cm2", "cm3"}
+
+    def _in_scope(self, it: "D2Item") -> bool:
+        """Items the game counts toward the sheet: the primary equipped set
+        (loc 1-10, excluding weapon-swap 11/12) plus charms carried in inventory."""
+        return ((it.mode == 1 and 1 <= it.location <= 10)
+                or (it.mode == 0 and it.page == 1
+                    and it.code.strip() in self._CHARM_CODES))
+
+    @staticmethod
+    def _socket_category(code: str) -> str:
+        """Which gems.txt mod column applies to runes/gems socketed in this item."""
+        code = code.strip()
+        if code in _WEAPON_CODES:
+            return "weapon"
+        t = _ARMOR_TYPE.get(code)
+        if t in _SHIELD_TYPES:
+            return "shield"
+        if t in _HELM_ARMOR_TYPES:
+            return "helm"
+        return ""
+
+    def _compute_item_bonuses(self) -> None:
+        """Sum +skill / +stat bonuses the game counts toward the character sheet.
+        Two subtleties the save forces us to reconstruct:
+          • set partial bonuses are stored on the item but only active once enough
+            pieces of that set are worn, so gate them by equipped piece count;
+          • rune/gem 'when socketed in X' mods aren't stored at all, so compute
+            them from gems.txt by the parent item's base type.
+        Charges (item_charged_skill) and oskills are not counted toward skills."""
+        scope = [it for it in self.items if self._in_scope(it)]
+
+        # Count equipped pieces per set group, to know how many partial set-bonus
+        # lists are active on each set item (list k activates at k+2 pieces).
+        set_counts: dict = {}
+        for it in scope:
+            if it.quality == 5 and it.set_id >= 0:
+                grp = _SET_ITEM_GROUP.get(it.set_id)
+                if grp:
+                    set_counts[grp] = set_counts.get(grp, 0) + 1
+
+        def _add_stat(sid, param, val):
+            # Skill bonuses are param-dependent, so route them by param; every other
+            # stat accumulates by id for the attribute and gear-bonus tables.
+            if sid == 127:                                # item_allskills
+                self.sk_all += val
+            elif sid == 83:                               # item_addclassskills
+                if param == self.char_class:
+                    self.sk_class += val
+            elif sid == 188:                              # item_addskill_tab
+                if (param >> 3) & 0x7 == self.char_class:
+                    self.sk_tab[param & 0x7] = self.sk_tab.get(param & 0x7, 0) + val
+            elif sid == 107:                              # item_singleskill
+                self.sk_single[param] = self.sk_single.get(param, 0) + val
+            else:
+                self.item_stat_totals[sid] = self.item_stat_totals.get(sid, 0) + val
+
+        for it in scope:
+            # Determine which stored stats are INACTIVE set partial bonuses.
+            inactive = set()
+            if it.quality == 5 and it.set_bonus_lists:
+                grp = _SET_ITEM_GROUP.get(it.set_id)
+                active = max(0, set_counts.get(grp, 0) - 1)  # pieces-1 lists active
+                for grp_idx in it.set_bonus_lists[active:]:
+                    inactive.update(grp_idx)
+            for i, (sid, _name, param, val) in enumerate(it.stats):
+                if i in inactive:
+                    continue
+                _add_stat(sid, param, val)
+            # Add rune/gem socket mods (not stored in the save).
+            if it.children:
+                cat = self._socket_category(it.code)
+                if cat:
+                    for child in it.children:
+                        mods = _RUNE_SOCKET_MODS.get(child.code.strip())
+                        if mods:
+                            for sid, val in mods.get(cat, ()):
+                                _add_stat(sid, 0, val)
+
+        # Core attributes (str/energy/dex/vit) read straight from the totals.
+        for sid in self.attr_items:
+            self.attr_items[sid] = self.item_stat_totals.get(sid, 0)
+
+    def _skill_from_items(self, skill_id: int, tab0: int) -> int:
+        return (self.sk_all + self.sk_class
+                + self.sk_tab.get(tab0, 0)
+                + self.sk_single.get(skill_id, 0))
 
     # ------------------------------------------------------------------
     def _find_jm(self, start: int) -> tuple:
@@ -1619,6 +2067,56 @@ class D2CharFile:
         lines.append(f"### {self.char_name}  ({cls_name} · Level {self.char_level})")
         lines.append("")
 
+        # ── Attributes ────────────────────────────────────────────────
+        attr_rows = [a for a in self.attributes if a[0] not in _ATTR_HIDDEN]
+        if attr_rows:
+            lines.append(f"#### {self.char_name} - Attributes")
+            lines.append("")
+            lines.append("| Stat | Base | From Items | Total |")
+            lines.append("|---|---|---|---|")
+            for sid, name, value in attr_rows:
+                label = _ATTR_LABEL.get(sid, name)
+                if sid in self.attr_items:        # str/energy/dex/vit: gear adds flat
+                    fi = self.attr_items[sid]
+                    lines.append(f"| {label} | {value} | +{fi} | {value + fi} |")
+                else:                             # unspent points: not gear-affected
+                    lines.append(f"| {label} | {value} | — | — |")
+            lines.append("")
+
+        # ── Gear Bonuses (aggregate "page 2" stats summed from gear) ───
+        bonus_rows = []
+        for stat_name, label, suffix in _GEAR_BONUS_ROWS:
+            sid = _STAT_ID_BY_NAME.get(stat_name)
+            val = self.item_stat_totals.get(sid, 0) if sid is not None else 0
+            if val:
+                bonus_rows.append((label, f"{val}{suffix}"))
+        for stat_name, label in _RESIST_ROWS:
+            sid = _STAT_ID_BY_NAME.get(stat_name)
+            val = self.item_stat_totals.get(sid, 0) if sid is not None else 0
+            if val:
+                bonus_rows.append((label, f"{val:+d}%"))
+        if bonus_rows:
+            lines.append(f"#### {self.char_name} - Gear Bonuses")
+            lines.append("")
+            lines.append("| Bonus | From Gear |")
+            lines.append("|---|---|")
+            for label, val in bonus_rows:
+                lines.append(f"| {label} | {val} |")
+            lines.append("")
+            # lines.append("*Passive skills/auras and difficulty penalties are NOT included.*")
+
+        # ── Skills (allocated hard points + gear bonus) ───────────────
+        if self.skills:
+            lines.append(f"#### {self.char_name} - Skills")
+            # lines.append(f"*{len(self.skills)} allocated*")
+            lines.append("")
+            lines.append("| Skill | Base | From Items | Total |")
+            lines.append("|---|---|---|---|")
+            for name, points, sid, tab0 in self.skills:
+                fi = self._skill_from_items(sid, tab0)
+                lines.append(f"| {name} | {points} | +{fi} | {points + fi} |")
+            lines.append("")
+
         # mode=6 (Socketed) items are children nested inside other items; skip them.
         # page=4 is the Horadric Cube in all known D2R formats.
         visible = [it for it in self.items if it.mode != 6]
@@ -1653,8 +2151,8 @@ class D2CharFile:
 
         # ── Equipped ──────────────────────────────────────────────────
         if equipped:
-            lines.append(f"#### Equipped - {self.char_name}")
-            lines.append(f"*{len(equipped)} items*")
+            lines.append(f"#### {self.char_name} - Equipped")
+            # lines.append(f"*{len(equipped)} items*")
             lines.append("")
             header, sep = _gear_table_header("Slot")
             lines.append(header)
@@ -1672,8 +2170,8 @@ class D2CharFile:
                 1 for it in items if it.code.strip() in _STACKABLE_CODES or it.simple
             )
             is_all_consumable = consumable_count == len(items)
-            lines.append(f"#### {title} - {self.char_name}")
-            lines.append(f"*{len(items)} items*")
+            lines.append(f"#### {self.char_name} - {title}")
+            # lines.append(f"*{len(items)} items*")
             lines.append("")
             if is_all_consumable:
                 _write_consumable_table(lines, items)
@@ -1690,8 +2188,8 @@ class D2CharFile:
         # ── Belt ──────────────────────────────────────────────────────
         # Off by default (compact); enable with --belts.
         if belt and _CONFIG.belts:
-            lines.append(f"#### Belt - {self.char_name}")
-            lines.append(f"*{len(belt)} items*")
+            lines.append(f"#### {self.char_name} - Belt")
+            # lines.append(f"*{len(belt)} items*")
             lines.append("")
             _write_consumable_table(lines, belt)
             lines.append("")
@@ -1711,8 +2209,8 @@ class D2CharFile:
 
         # ── Mercenary ─────────────────────────────────────────────────
         if self.merc_items:
-            lines.append(f"#### Mercenary - {self.char_name}")
-            lines.append(f"*{len(self.merc_items)} items*")
+            lines.append(f"#### {self.char_name}'s - Mercenary")
+            # lines.append(f"*{len(self.merc_items)} items*")
             lines.append("")
             header, sep = _gear_table_header("Slot")
             lines.append(header)
@@ -1780,12 +2278,18 @@ def main() -> None:
         lines = [
             "# D2R Save Report",
             "",
-            f"**Characters parsed:** {len(chars)}  ",
-            f"**Stash files parsed:** {len(stashes)}",
-            "",
-            "[toc]",
+            "- **CRITICAL CONTEXT RETENTION:** This file is a multi-character database. When a user asks a question about a specific character (e.g., `Darknight` or `Vincent`), you MUST lock onto that character's exact header and ONLY look at data between that header and the next major character header.",
+            "- **DO NOT CROSS-POLLUTE BACKGROUNDS:** Many characters share identical subheadings (such as `Attributes`, `Gear Bonuses`, `Inventory`, `Stash`, and `Mercenary`). You are strictly forbidden from pulling rows from a 'Mercenary' or 'Inventory' table unless you have verified it belongs under the requested character's parent block.",
+            "- **ISOLATED SECTIONS:** For example, the string `Mercenary - Darknight` is a child element of the character Darknight. The string `Mercenary - Vincent` belongs strictly to Vincent. Never blend or mistake the two.",
+            "- **COMPREHENSIVE SEGMENT READING:** When checking a section, read it sequentially from top-to-bottom to ensure columns, slots, and stats match up cleanly without skipping lines.",
+            "---",
+            # f"**Characters parsed:** {len(chars)}  ",
+            # f"**Stash files parsed:** {len(stashes)}",
+            # "",
+            # "[toc]",
             "",
         ]
+        _write_collection_summary(lines, stashes)
         # Write all stash sections
         for stash in stashes:
             stash._write_stash_sections(lines)
@@ -1801,8 +2305,8 @@ def main() -> None:
         # Characters only, no stash files found
         lines = [
             "# D2R Save Report",
-            "",
-            f"**Characters parsed:** {len(chars)}",
+            # "",
+            # f"**Characters parsed:** {len(chars)}",
             "",
             "## Character Inventories",
             "",

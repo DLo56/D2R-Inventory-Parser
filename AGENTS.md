@@ -74,6 +74,52 @@ must be preserved:
 "Zero desyncs" means BOTH no `scanning forward` (character path) **and** no
 `[SKIP]` (stash path) — they are different code paths with different messages.
 
+## Character header sections (attributes & skills)
+
+Between the fixed header and the first `JM` item list, a `.d2s` carries two
+sections the parser also reads (`_parse_stats` / `_parse_skills`):
+
+- **Attributes** — marker `gf`, then a packed bit-stream of `[9-bit stat id]
+  [value]` pairs terminated by id `0x1FF`. Value widths come from
+  itemstatcost's **`CSvBits`** column (NOT the item "Save Bits"); `CSvSigned`
+  marks two's-complement values. Only base stats (ids 0–15) are stored;
+  life/mana/stamina (current+max) are **×256 fixed-point**. Derived stats
+  (resists, breakpoints) are runtime-only and never in the save.
+- **Skills** — marker `if`, then **30 bytes** of hard points, one per class
+  skill. Index 0–29 maps to `skills.txt` rows filtered by the class's
+  `charclass` token (row order == in-game tree order). Class id→token lives in
+  `_CLASS_SKILL_TOKEN`. Gear `+skills` are runtime-only, not saved.
+
+`From Items` totals are computed from the **primary equipped set (loc 1–10,
+excluding weapon-swap 11/12) + inventory charms (`cm1/2/3`)** — the items the
+game counts toward the sheet. Sum stat 127 (all-skills), 83 (class, param==class
+id), 188 (skill tab), 107 (single skill, param==skill id); skip 204
+(charges/oskills). Two effects the save doesn't hand you directly:
+- **Set partial bonuses** are stored on the item (extra stat lists after the
+  base list, recorded as index ranges in `set_bonus_lists`) but are only active
+  once enough set pieces are worn. Gate them: list *k* activates at *k+2* pieces,
+  i.e. apply `set_bonus_lists[:pieces-1]`, dropping the rest. Count pieces by
+  `_SET_ITEM_GROUP[set_id]`. They still render in the item's mod string.
+- **Rune/gem socket mods** aren't stored at all (the "when socketed in X" gap).
+  Recompute from `gems.txt` (`weaponMod/helmMod/shieldMod`) keyed by the parent's
+  base type — weapon vs `_SHIELD_TYPES` vs `_HELM_ARMOR_TYPES` (`_ARMOR_TYPE`).
+  Mod codes resolve to stat ids via `properties.txt` (`_PROP_STATS`, e.g.
+  `res-all` → all four resists), so resistances/MF/etc. are covered, not just
+  attributes.
+
+`_compute_item_bonuses` also accumulates `item_stat_totals[sid]` (gated set
+bonuses + socket mods) for the **Gear Bonuses** table — aggregate "page 2" stats
+(`_GEAR_BONUS_ROWS` + `_RESIST_ROWS`). These are **gear-only**: passive skills
+and auras that feed the same stats in-game (Barbarian Natural Resistance /
+Increased Speed, resist auras) are NOT added, and resistances are raw gear totals
+(no difficulty penalty, no 75% cap). Defense/AR/Damage need full formulas and are
+out of scope. Keep the section's caveat note in sync with what's actually summed. **Skill-tab gotcha:** the `item_addskill_tab` param tab index
+(see `_skilltab`, screen order) does NOT equal `skilldesc.SkillPage` and the
+permutation differs per class (Paladin Combat=page1=tab0, but Necromancer
+Curses=page1=tab2). Resolve it via anchor skills (`_TAB_ANCHORS` →
+`_CLASS_PAGE_TO_TAB`), never `page-1`. Warlock’s tabs aren’t anchored yet, so its
++tab bonuses are deliberately not attributed.
+
 ## When adding/decoding a stat
 
 - Bit widths come from `itemstatcost.txt` ("Save Bits", "Save Param Bits").
